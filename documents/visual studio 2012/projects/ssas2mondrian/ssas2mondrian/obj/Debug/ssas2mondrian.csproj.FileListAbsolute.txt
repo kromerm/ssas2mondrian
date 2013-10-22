@@ -1,0 +1,6 @@
+c:\users\mkromer\documents\visual studio 2012\Projects\ssas2mondrian\ssas2mondrian\bin\Debug\ssas2mondrian.exe.config
+c:\users\mkromer\documents\visual studio 2012\Projects\ssas2mondrian\ssas2mondrian\bin\Debug\ssas2mondrian.exe
+c:\users\mkromer\documents\visual studio 2012\Projects\ssas2mondrian\ssas2mondrian\bin\Debug\ssas2mondrian.pdb
+c:\users\mkromer\documents\visual studio 2012\Projects\ssas2mondrian\ssas2mondrian\obj\Debug\ssas2mondrian.csprojResolveAssemblyReference.cache
+c:\users\mkromer\documents\visual studio 2012\Projects\ssas2mondrian\ssas2mondrian\obj\Debug\ssas2mondrian.exe
+c:\users\mkromer\documents\visual studio 2012\Projects\ssas2mondrian\ssas2mondrian\obj\Debug\ssas2mondrian.pdb

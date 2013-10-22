@@ -1,0 +1,6 @@
+C:\Users\mkromer\ssas2mondrian\ssas2mondrian\bin\Release\ssas2mondrian.exe.config
+C:\Users\mkromer\ssas2mondrian\ssas2mondrian\bin\Release\ssas2mondrian.exe
+C:\Users\mkromer\ssas2mondrian\ssas2mondrian\bin\Release\ssas2mondrian.pdb
+C:\Users\mkromer\ssas2mondrian\ssas2mondrian\obj\Release\ssas2mondrian.csprojResolveAssemblyReference.cache
+C:\Users\mkromer\ssas2mondrian\ssas2mondrian\obj\Release\ssas2mondrian.exe
+C:\Users\mkromer\ssas2mondrian\ssas2mondrian\obj\Release\ssas2mondrian.pdb

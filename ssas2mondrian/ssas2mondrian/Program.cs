@@ -6,10 +6,17 @@ using System.Linq;
 using System.Text;
 using Microsoft.AnalysisServices;
 using Microsoft.AnalysisServices.Hosting;
+using System.Collections;
 
 /* Convert simple base SSAS model to Mondrian XML schemas
  * Built October 2013 by Mark Kromer
  * mark_kromer@mail.com
+ * 
+ * Update: Nov 2013
+ *  - Added support for command-line option for SSAS All member option in Mondrian schema
+ *  - Added support for join schemas
+ *  - Added support for referenced dimensions in cube
+ *  - Fixed a few bugs
  */
 
 public class ssas2mondrian
@@ -52,16 +59,27 @@ public class ssas2mondrian
                     leveltype = "TimeWeeks";
                 }
                 else
-                    if (sin.Contains("Day"))
+                    if (sin.Contains("Day") || sin.Contains("Date"))
                     {
                         leveltype = "TimeDays";
                     }
                     else
-                    if (sin.Contains("Year"))
-                    {
-                        leveltype = "TimeYears";
-                    }
-                    else leveltype = "Regular";
+                        if (sin.Contains("Month"))
+                        {
+                            leveltype = "TimeMonths";
+                        }
+                        else
+                            if (sin.Contains("Quarter"))
+                            {
+                                leveltype = "TimeQuarters";
+                            }
+                            else
+                                if (sin.Contains("Year"))
+                                {
+                                leveltype = "TimeYears";
+                                }
+                            // DEFAULT VALUE    
+                            else leveltype = "TimeUndefined";
 
         return leveltype;
     }
@@ -96,6 +114,7 @@ public class ssas2mondrian
         Console.WriteLine("optional: /P    <--- pause at the end of the execution");
         Console.WriteLine("optional: /N    <--- custom name for resulting Mondrian schema");
         Console.WriteLine("optional: /A    <--- include schema attribute in XML for SQL Server source database tables");
+        Console.WriteLine("optional: /L    <--- include SSAS All member in Mondrian schema");
         Console.WriteLine("optional: /?    <--- show help");
         Console.WriteLine();
         Console.WriteLine("Sample 1: Set just required values");
@@ -119,8 +138,16 @@ public class ssas2mondrian
         String OLAPCube=null;
         bool shallipause=false; // do u want me to wait at the end of the run?
         bool includeschema = false; // shall i include the SQL Server schema names in the Schema XML syntax output?
-        bool boolM2M = true; // Include Many-to-many dimensions?
+        bool boolM2M = true; // Include Many-to-many dimensions?        
+        bool boolAll = false; // Set to false by command-line switch to inlude Al member
         String schemaname = null;
+        
+        // for testing ...
+        /*        
+        OLAPDB = "AdventureWorks";
+        OLAPCube = "Adventure Works";
+        OLAPServerName = "localhost";
+        */      
 
         // process command line switches
         try
@@ -149,6 +176,9 @@ public class ssas2mondrian
                         break;
                     case "/A": // shall I include the SQL Server schema from the source DB? OPTIONAL
                         includeschema = true;
+                        break;
+                    case "/L": // shall I include the All member? OPTIONAL
+                        boolAll = true;
                         break;
                     case "/?":
                     case "/H":
@@ -207,12 +237,30 @@ public class ssas2mondrian
                         List<String> d2 = new List<String>(); // List of dimension names to be shared throughout XML
                         Dictionary<String,String> fks = new Dictionary<String,String>(); // List of FKs for dimensions
                         List<String> ignoredim = new List<String>();
+                        Hashtable refdims = new Hashtable();
+                        Hashtable specialFK = new Hashtable();
 
                         // Check for incompatible dimension types
                         foreach (MeasureGroup OLAPMeasureGroup in OLAPCubex.MeasureGroups) 
                         {
                             foreach (MeasureGroupDimension mgdim in OLAPMeasureGroup.Dimensions)
                             {
+
+                                // If this is a reference dim, we'll need to store the snowflake joins
+                                if (mgdim is ReferenceMeasureGroupDimension)
+                                {                                    
+                                    ReferenceMeasureGroupDimension refdim = (ReferenceMeasureGroupDimension)mgdim;                                    
+                                    try
+                                    {
+                                        refdims.Add(mgdim.Dimension.Name, refdim.CubeDimension.Dimension.KeyAttribute.KeyColumns[0].ToString());
+                                        refdims.Add(mgdim.Dimension.Name + "XX", refdim.IntermediateGranularityAttribute.Attribute.KeyColumns[0].ToString());
+                                        string [] temps=splitField(refdim.IntermediateCubeDimension.Dimension.KeyAttribute.KeyColumns[0].ToString());
+                                        // Need to add special FK to satisfy Mondrian Snowflake schema
+                                        specialFK.Add(mgdim.Dimension.Name, temps[1]);
+                                    }
+                                    catch (Exception e) { };                                    
+                                }
+                                
                                 if (boolM2M && mgdim is ManyToManyMeasureGroupDimension) ignoredim.Add(mgdim.CubeDimension.Name);
                                 if (mgdim is DataMiningMeasureGroupDimension) ignoredim.Add(mgdim.CubeDimension.Name);
                             }
@@ -220,6 +268,9 @@ public class ssas2mondrian
                         
                         foreach (CubeDimension OLAPDimension in OLAPCubex.Dimensions)
                         {
+                            // Set this to set table name = a for snowflake
+                            bool boolSnow = false;
+                            string snowstring = " ";
 
                             // Check to see if we should skip this dim
                             if (ignoredim.Contains(OLAPDimension.Name)) continue;
@@ -227,22 +278,60 @@ public class ssas2mondrian
                             // We can't handle composite keys in Mondrian, so I'm just taking the first key column
                             string[] myspl = splitField(OLAPDimension.Attributes[0].Attribute.KeyColumns[0].ToString());                            
 
-                            String dname ="visible=\""+OLAPDimension.Visible+"\" highCardinality=\"false\" name=\"" + OLAPDimension.Name + "\">";
+                            // Mondrian only has 2 types of Dimensions: StandardDimension and TimeDimension
+                            String dimtype = "StandardDimension";
+                            if (OLAPDimension.Dimension.Type.ToString().Equals("Time")) dimtype = "TimeDimension";
+
+                            String dname ="visible=\""+OLAPDimension.Visible+"\" type=\""+dimtype+"\" highCardinality=\"false\" name=\"" + OLAPDimension.Name + "\">";
                             dnames.Add(dname);
-                            fks.Add(dname,myspl[1]);
+                            
+                            // if not already set, set the foreign key for this Dimension
+                            string fstring = myspl[1];
+                            if (specialFK.ContainsKey(OLAPDimension.Name)) fstring = specialFK[OLAPDimension.Name].ToString();
+                             
+                            fks.Add(dname,fstring);                            
+                            
                             d2.Add(OLAPDimension.Name);
                             Console.WriteLine("<Dimension " + dname);
     
-                            // Turn attributes into default hierarchy
-                            Console.WriteLine("<Hierarchy name=\"Default\" visible=\"true\" hasAll=\"true\" allMemberName=\"All\" primaryKey=\""+myspl[1]+"\">");
+                            // if this is a reference dim, then we need to build the JOIN syntax
+                            if (refdims.ContainsKey(OLAPDimension.Name.ToString()))
+                            {
+                                boolSnow = true;
+                                string[] ms = splitField(refdims[OLAPDimension.Name].ToString());
+                                string[] ks = splitField(refdims[OLAPDimension.Name + "XX"].ToString());
+                                
+                                // Turn attributes into default hierarchy
+                                Console.WriteLine("<Hierarchy name=\"Default\" visible=\"true\" hasAll=\"true\" primaryKey=\"" + specialFK[OLAPDimension.Name].ToString() + "\" primaryKeyTable=\"a\">");
+                                Console.WriteLine("<Join leftAlias=\"a\" leftKey=\"" + ks[1] + "\" rightAlias=\"b\" rightKey=\"" + ms[1] + "\">");
 
-                            if (includeschema)
-                            {
-                                Console.WriteLine("<Table name=\"" + myspl[0] + "\" schema=\""+sschema+"\"></Table>");
+                                if (includeschema)
+                                {
+                                    Console.WriteLine("<Table name=\"" + myspl[0] + "\" schema=\"" + sschema + "\" alias=\"a\"></Table>");
+                                    Console.WriteLine("<Table name=\"" + ks[0] + "\" schema=\"" + sschema + "\" alias=\"b\"></Table>");
+                                }
+                                else
+                                {
+                                    Console.WriteLine("<Table name=\"" + myspl[0] + "\" alias=\"a\"></Table>");
+                                    Console.WriteLine("<Table name=\"" + ks[0] + "\" alias=\"b\"></Table>");
+                                }
+
+                                Console.WriteLine("</Join>");
+
                             }
-                            else
+                            else // if not a snowflake ...
                             {
-                                Console.WriteLine("<Table name=\"" + myspl[0] + "\"></Table>");
+                                // Turn attributes into default hierarchy
+                                Console.WriteLine("<Hierarchy name=\"Default\" visible=\"true\" hasAll=\"true\" primaryKey=\"" + myspl[1] + "\">");
+
+                                if (includeschema)
+                                {
+                                    Console.WriteLine("<Table name=\"" + myspl[0] + "\" schema=\"" + sschema + "\"></Table>");
+                                }
+                                else
+                                {
+                                    Console.WriteLine("<Table name=\"" + myspl[0] + "\"></Table>");
+                                }
                             }
                                 
                             foreach (CubeAttribute OLAPDimAttribute in OLAPDimension.Attributes)
@@ -251,49 +340,85 @@ public class ssas2mondrian
                                 String mystring =OLAPDimAttribute.Attribute.KeyColumns[0].ToString();                                
                                 string [] mysplit=mystring.Split('.');
 
-                                String ss1=convertDataType(OLAPDimAttribute.Attribute.KeyColumns[0].DataType.ToString());
-                                String ss2 = convertLevelType(OLAPDimAttribute.Attribute.Type.ToString());
-                                string[] splitNameColumn = OLAPDimAttribute.Attribute.NameColumn.ToString().Split('.');                                
+                                String ss1=convertDataType(OLAPDimAttribute.Attribute.KeyColumns[0].DataType.ToString());                                
+                                string[] splitNameColumn = OLAPDimAttribute.Attribute.NameColumn.ToString().Split('.');
+
+                                String ss2 = "Regular";
+                                // Convert SSAS DimType to Mondrian LevelType, but ONLY if it is a TimeDim
+                                if (OLAPDimension.Dimension.Type.ToString().Equals("Time"))
+                                    ss2 = convertLevelType(OLAPDimAttribute.Attribute.Type.ToString());
+
+                                if (boolSnow) snowstring = " table=\"b\" ";
 
                                 Console.WriteLine("<Level name=\"" + OLAPDimAttribute.Attribute.Name + "\" visible=\"" + OLAPDimAttribute.AttributeHierarchyVisible +                                    
-                                    "\" column=\"" + mysplit[1] + "\" type=\"" + ss1 +
-                                    "\" uniqueMembers=\"true\" levelType=\"" + ss2 + "\" hideMemberIf=\"Never\">");
+                                    "\""+snowstring+" column=\"" + mysplit[1] + "\" type=\"" + ss1 +
+                                    "\" levelType=\"" + ss2 + "\" hideMemberIf=\"Never\">");
                                 Console.WriteLine("</Level>");
                                     
                             }
                             Console.WriteLine("</Hierarchy>");
 
-
                             //Dimension Hierarchy 
                             foreach (CubeHierarchy OLAPDimHierarchy in OLAPDimension.Hierarchies)
                             {                                
                                 string [] mysplit = splitField(OLAPDimHierarchy.Hierarchy.Levels[0].SourceAttribute.KeyColumns[0].ToString());
+                                string allmember = null;
+                                if (boolAll) allmember = "allMemberName=\"" + OLAPDimHierarchy.Hierarchy.AllMemberName+"\"";
 
-                                Console.WriteLine("<Hierarchy name=\""+ OLAPDimHierarchy.Hierarchy.Name  +"\" visible=\""+ OLAPDimHierarchy.Visible+
-                                    "\" hasAll=\"true\" allMemberName=\""+OLAPDimHierarchy.Hierarchy.AllMemberName+
-                                    "\" primaryKey=\""+mysplit[1]+"\">");
+                                // check for snowflake
+                                if (boolSnow)
+                                {
+                                    Console.WriteLine("<Hierarchy name=\"" + OLAPDimHierarchy.Hierarchy.Name + "\" visible=\"" + OLAPDimHierarchy.Visible +
+                                        "\" hasAll=\"true\" "+ allmember + " primaryKey=\"" + specialFK[OLAPDimension.Name].ToString() + "\" primaryKeyTable=\"a\">");
 
-                                if (includeschema)
-                                {
-                                    Console.WriteLine("<Table name=\"" + mysplit[0] + "\" schema=\""+sschema+"\"></Table>");
+                                    string[] ms = splitField(refdims[OLAPDimension.Name].ToString());
+                                    string[] ks = splitField(refdims[OLAPDimension.Name + "XX"].ToString());
+
+                                    Console.WriteLine("<Join leftAlias=\"a\" leftKey=\"" + ks[1] + "\" rightAlias=\"b\" rightKey=\"" + ms[1] + "\">");
+
+                                    if (includeschema)
+                                    {
+                                        Console.WriteLine("<Table name=\"" + myspl[0] + "\" schema=\"" + sschema + "\" alias=\"a\"></Table>");
+                                        Console.WriteLine("<Table name=\"" + ks[0] + "\" schema=\"" + sschema + "\" alias=\"b\"></Table>");
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine("<Table name=\"" + myspl[0] + "\" alias=\"a\"></Table>");
+                                        Console.WriteLine("<Table name=\"" + ks[0] + "\" alias=\"b\"></Table>");
+                                    }
+
+                                    Console.WriteLine("</Join>");
+
                                 }
-                                else
+                                else //else not a snowflake join
                                 {
-                                    Console.WriteLine("<Table name=\"" + mysplit[0] + "\"></Table>");
+                                    Console.WriteLine("<Hierarchy name=\"" + OLAPDimHierarchy.Hierarchy.Name + "\" visible=\"" + OLAPDimHierarchy.Visible +
+                                        "\" hasAll=\"true\" " + allmember + " primaryKey=\"" + mysplit[1] + "\">");
+
+                                    if (includeschema)
+                                    {
+                                        Console.WriteLine("<Table name=\"" + mysplit[0] + "\" schema=\"" + sschema + "\"></Table>");
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine("<Table name=\"" + mysplit[0] + "\"></Table>");
+                                    }
+
                                 }
-                                                                       
 
                                 foreach (Level OLAPDimHierachyLevel in OLAPDimHierarchy.Hierarchy.Levels)
                                 {
                                     string[] ksplit = splitField(OLAPDimHierachyLevel.SourceAttribute.KeyColumns[0].ToString());
-                                        
-                                    String leveltype = null;
-                                    leveltype=convertLevelType(OLAPDimHierachyLevel.SourceAttribute.Type.ToString());
 
+                                    String leveltype = "Regular";
+                                    // Convert SSAS DimType to Mondrian LevelType, but ONLY if it is a TimeDim
+                                    if (OLAPDimension.Dimension.Type.ToString().Equals("Time"))
+                                        leveltype = convertLevelType(OLAPDimHierachyLevel.SourceAttribute.Type.ToString());
+                                    
                                     string dt1 = convertDataType(OLAPDimHierachyLevel.SourceAttribute.KeyColumns[0].DataType.ToString());
-                                            
-                                    Console.WriteLine("<Level name=\"" + OLAPDimHierachyLevel.Name + "\" visible=\"" + OLAPDimHierarchy.Visible + "\" column=\""+
-                                        ksplit[1]+"\" type=\""+dt1+"\" uniqueMembers=\"true\" levelType=\""+leveltype+"\" hideMemberIf=\"Never\">");
+
+                                    Console.WriteLine("<Level name=\"" + OLAPDimHierachyLevel.Name + "\" visible=\"" + OLAPDimHierarchy.Visible + "\" "+snowstring+" column=\"" +
+                                        ksplit[1]+"\" type=\""+dt1+"\" levelType=\""+leveltype+"\" hideMemberIf=\"Never\">");
                                     Console.WriteLine("</Level>");
                                 }
                                 Console.WriteLine("</Hierarchy>");
